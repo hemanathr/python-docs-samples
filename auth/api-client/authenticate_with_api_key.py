@@ -30,7 +30,8 @@ def authenticate_with_api_key(quota_project_id: str, api_key_string: str) -> Non
 
     # Initialize the Language Service client and set the API key and the quota project id.
     client = language_v1.LanguageServiceClient(
-        client_options={"api_key": api_key_string, "quota_project_id": quota_project_id}
+        client_options={"api_key": api_key_string,
+                        "quota_project_id": quota_project_id}
     )
 
     text = "Hello, world!"
@@ -49,3 +50,6 @@ def authenticate_with_api_key(quota_project_id: str, api_key_string: str) -> Non
 
 
 # [END apikeys_authenticate_api_key]
+
+authenticate_with_api_key(
+    "chat-bot-411605", "AIzaSyD63nt08BcUPRVKbYuXhiHq5rd14LRz2qg")
