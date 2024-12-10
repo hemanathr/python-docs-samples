@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2018 Google LLC All Rights Reserved.
+# Copyright 2018 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ name = "projects/" + os.environ["GOOGLE_CLOUD_PROJECT"]
 # [END instantiate]
 
 
+# [START job_auto_complete_job_title]
 # [START auto_complete_job_title]
 def job_title_auto_complete(client_service, query, company_name):
     complete = client_service.projects().complete(
@@ -38,6 +39,7 @@ def job_title_auto_complete(client_service, query, company_name):
 
 
 # [END auto_complete_job_title]
+# [END job_auto_complete_job_title]
 
 
 # [START auto_complete_default]

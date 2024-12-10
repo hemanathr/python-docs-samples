@@ -24,11 +24,19 @@ from ..disks.clone_encrypted_disk_managed_key import create_disk_from_kms_encryp
 from ..disks.create_empty_disk import create_empty_disk
 from ..disks.create_from_image import create_disk_from_image
 from ..disks.create_from_source import create_disk_from_disk
+from ..disks.create_hyperdisk import create_hyperdisk
+from ..disks.create_hyperdisk_from_pool import create_hyperdisk_from_pool
+from ..disks.create_hyperdisk_storage_pool import create_hyperdisk_storage_pool
 from ..disks.create_kms_encrypted_disk import create_kms_encrypted_disk
+from ..disks.create_secondary_custom import create_secondary_custom_disk
+from ..disks.create_secondary_disk import create_secondary_disk
+from ..disks.create_secondary_region_disk import create_secondary_region_disk
 from ..disks.delete import delete_disk
 from ..disks.list import list_disks
 from ..disks.regional_create_from_source import create_regional_disk
 from ..disks.regional_delete import delete_regional_disk
+from ..disks.replication_disk_start import start_disk_replication
+from ..disks.replication_disk_stop import stop_disk_replication
 from ..disks.resize_disk import resize_disk
 from ..images.get import get_image_from_family
 from ..instances.create import create_instance, disk_from_image
@@ -37,11 +45,15 @@ from ..instances.get import get_instance
 from ..snapshots.create import create_snapshot
 from ..snapshots.delete import delete_snapshot
 
+
 PROJECT = google.auth.default()[1]
 ZONE = "europe-west2-c"
+ZONE_SECONDARY = "europe-west1-c"
 REGION = "europe-west2"
+REGION_SECONDARY = "europe-central2"
 KMS_KEYRING_NAME = "compute-test-keyring"
 KMS_KEY_NAME = "compute-test-key"
+DISK_SIZE = 11
 
 
 @pytest.fixture()
@@ -90,6 +102,23 @@ def test_disk():
 
 
 @pytest.fixture
+def test_empty_pd_balanced_disk():
+    """
+    Creates and deletes a pd_balanced disk in secondary zone.
+    """
+    disk_name = "test-pd-balanced-disk" + uuid.uuid4().hex[:4]
+    disk = create_empty_disk(
+        PROJECT,
+        ZONE_SECONDARY,
+        disk_name,
+        f"zones/{ZONE_SECONDARY}/diskTypes/pd-balanced",
+        disk_size_gb=DISK_SIZE,
+    )
+    yield disk
+    delete_disk(PROJECT, ZONE_SECONDARY, disk_name)
+
+
+@pytest.fixture
 def test_snapshot(test_disk):
     """
     Make a snapshot that will be deleted when tests are done.
@@ -100,6 +129,17 @@ def test_snapshot(test_disk):
     )
     yield snap
     delete_snapshot(PROJECT, snap.name)
+
+
+@pytest.fixture()
+def autodelete_regional_disk_name():
+    disk_name = "secondary-region-disk" + uuid.uuid4().hex[:4]
+    yield disk_name
+    try:
+        delete_regional_disk(PROJECT, REGION_SECONDARY, disk_name)
+    except NotFound:
+        # The disk was already deleted
+        pass
 
 
 @pytest.fixture()
@@ -147,7 +187,7 @@ def autodelete_regional_blank_disk():
     disk_type = f"regions/{REGION}/diskTypes/pd-balanced"
 
     disk = create_regional_disk(
-        PROJECT, REGION, replica_zones, disk_name, disk_type, 11
+        PROJECT, REGION, replica_zones, disk_name, disk_type, DISK_SIZE
     )
 
     yield disk
@@ -163,7 +203,7 @@ def autodelete_regional_blank_disk():
 
 @pytest.fixture
 def autodelete_blank_disk():
-    disk_name = "regional-disk-" + uuid.uuid4().hex[:10]
+    disk_name = "test-disk-" + uuid.uuid4().hex[:10]
     disk_type = f"zones/{ZONE}/diskTypes/pd-standard"
 
     disk = create_empty_disk(PROJECT, ZONE, disk_name, disk_type, 12)
@@ -193,6 +233,15 @@ def autodelete_compute_instance():
     yield instance
 
     delete_instance(PROJECT, ZONE, instance_name)
+
+
+@pytest.fixture(scope="session")
+def autodelete_hyperdisk_pool():
+    pool_name = "test-pool-" + uuid.uuid4().hex[:6]
+    pool = create_hyperdisk_storage_pool(PROJECT, ZONE, pool_name)
+    yield pool
+    pool_client = compute_v1.StoragePoolsClient()
+    pool_client.delete(project=PROJECT, zone=ZONE, storage_pool=pool_name)
 
 
 def test_disk_create_delete(autodelete_disk_name):
@@ -333,3 +382,120 @@ def test_disk_resize(autodelete_blank_disk, autodelete_regional_blank_disk):
         ).size_gb
         == 23
     )
+
+
+def test_create_hyperdisk_pool(autodelete_hyperdisk_pool):
+    assert "hyperdisk" in autodelete_hyperdisk_pool.storage_pool_type
+
+
+def test_create_hyperdisk_from_pool(autodelete_hyperdisk_pool, autodelete_disk_name):
+    disk = create_hyperdisk_from_pool(
+        PROJECT, ZONE, autodelete_disk_name, autodelete_hyperdisk_pool.name
+    )
+    assert disk.storage_pool == autodelete_hyperdisk_pool.self_link
+    assert "hyperdisk" in disk.type
+
+
+def test_create_hyperdisk(autodelete_disk_name):
+    disk = create_hyperdisk(PROJECT, ZONE, autodelete_disk_name, 100)
+    assert "hyperdisk" in disk.type_.lower()
+
+
+def test_create_secondary_region(
+    autodelete_regional_blank_disk, autodelete_regional_disk_name
+):
+    disk = create_secondary_region_disk(
+        autodelete_regional_blank_disk.name,
+        PROJECT,
+        REGION,
+        autodelete_regional_disk_name,
+        PROJECT,
+        REGION_SECONDARY,
+        DISK_SIZE,
+    )
+    assert disk.async_primary_disk.disk == autodelete_regional_blank_disk.self_link
+
+
+def test_create_secondary(test_empty_pd_balanced_disk, autodelete_disk_name):
+    disk = create_secondary_disk(
+        primary_disk_name=test_empty_pd_balanced_disk.name,
+        primary_disk_project=PROJECT,
+        primary_disk_zone=ZONE_SECONDARY,
+        secondary_disk_name=autodelete_disk_name,
+        secondary_disk_project=PROJECT,
+        secondary_disk_zone=ZONE,
+        disk_size_gb=DISK_SIZE,
+        disk_type="pd-ssd",
+    )
+    assert disk.async_primary_disk.disk == test_empty_pd_balanced_disk.self_link
+
+
+def test_create_custom_secondary_disk(
+    test_empty_pd_balanced_disk, autodelete_disk_name
+):
+    disk = create_secondary_custom_disk(
+        primary_disk_name=test_empty_pd_balanced_disk.name,
+        primary_disk_project=PROJECT,
+        primary_disk_zone=ZONE_SECONDARY,
+        secondary_disk_name=autodelete_disk_name,
+        secondary_disk_project=PROJECT,
+        secondary_disk_zone=ZONE,
+        disk_size_gb=DISK_SIZE,
+        disk_type="pd-ssd",
+    )
+    assert disk.labels["secondary-disk-for-replication"] == "true"
+    assert disk.labels["source-disk"] == test_empty_pd_balanced_disk.name
+
+
+def test_start_stop_region_replication(
+    autodelete_regional_blank_disk, autodelete_regional_disk_name
+):
+    create_secondary_region_disk(
+        autodelete_regional_blank_disk.name,
+        PROJECT,
+        REGION,
+        autodelete_regional_disk_name,
+        PROJECT,
+        REGION_SECONDARY,
+        DISK_SIZE,
+    )
+    assert start_disk_replication(
+        project_id=PROJECT,
+        primary_disk_location=REGION,
+        primary_disk_name=autodelete_regional_blank_disk.name,
+        secondary_disk_location=REGION_SECONDARY,
+        secondary_disk_name=autodelete_regional_disk_name,
+    )
+    assert stop_disk_replication(
+        project_id=PROJECT,
+        primary_disk_location=REGION,
+        primary_disk_name=autodelete_regional_blank_disk.name,
+    )
+    # Wait for the replication to stop
+    time.sleep(20)
+
+
+def test_start_stop_zone_replication(test_empty_pd_balanced_disk, autodelete_disk_name):
+    create_secondary_disk(
+        test_empty_pd_balanced_disk.name,
+        PROJECT,
+        ZONE_SECONDARY,
+        autodelete_disk_name,
+        PROJECT,
+        ZONE,
+        DISK_SIZE,
+    )
+    assert start_disk_replication(
+        project_id=PROJECT,
+        primary_disk_location=ZONE_SECONDARY,
+        primary_disk_name=test_empty_pd_balanced_disk.name,
+        secondary_disk_location=ZONE,
+        secondary_disk_name=autodelete_disk_name,
+    )
+    assert stop_disk_replication(
+        project_id=PROJECT,
+        primary_disk_location=ZONE_SECONDARY,
+        primary_disk_name=test_empty_pd_balanced_disk.name,
+    )
+    # Wait for the replication to stop
+    time.sleep(20)
